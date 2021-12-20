@@ -1,0 +1,9 @@
+{
+  "someusername": {
+    "password": "passwordthatwillbehashed",
+    "domains": [
+      "example.com",
+      "example.se"
+    ]
+  }
+}
