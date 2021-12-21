@@ -1,0 +1,16 @@
+version: '3'
+
+services:
+  loopia-proxy:
+    image: ghcr.io/gudchalmers/loopia-proxy:latest
+    volumes:
+      - LoopiaProxyConfig:/app/config
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    environment:
+      "LOOPIA_USER": "someusername@loopiaapi"
+      "LOOPIA_PASS": "somepassword"
+
+volumes:
+  LoopiaProxyConfig:

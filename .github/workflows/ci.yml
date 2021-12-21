@@ -1,6 +1,9 @@
 name: Create and publish the Docker image
 
-on: [push]
+on:
+  push:
+    tags:
+      - 'v*'
 
 env:
   REGISTRY: ghcr.io

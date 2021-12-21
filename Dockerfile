@@ -9,5 +9,5 @@ ADD ./config/settings-example.json ./config/settings.json
 VOLUME /app/config
 ENV HOST=0.0.0.0
 ENV PORT=8000
-EXPOSE 8000/tcp
+EXPOSE 8000
 CMD [ "python3", "-u", "main.py"]

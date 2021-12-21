@@ -34,6 +34,12 @@ Bt default there should now be accessible on http://localhost:8000/RPCSERV
 
 The host and port is controllable with the `HOST` and `PORT` environment variables.
 
+## Docker
+
+There is an example `docker-compose.yml` file in this repo that can be used to setup the proxy.
+
+After you have setup the docker container you need to update the `settings.json` files as described above.
+
 ## License
 
 [MIT][4]
