@@ -3,13 +3,13 @@ import logging
 import os
 import re
 import sys
+from http.server import BaseHTTPRequestHandler as httpHandler
 from xmlrpc.client import ServerProxy
 from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 
 from argon2 import PasswordHasher, extract_parameters
 from argon2.exceptions import InvalidHash, VerifyMismatchError, VerificationError
 from defusedxml.xmlrpc import monkey_patch
-from http.server import BaseHTTPRequestHandler as http_handler
 from dotmap import DotMap
 
 # Monkey patch xmlrpc to protect it from attacks https://github.com/tiran/defusedxml
@@ -24,19 +24,22 @@ def log_message(self, format, *args):
     log.info("%s - - [%s] %s" % (self.address_string(), self.log_date_time_string(), format % args))
 
 
-http_handler.log_message = log_message
+httpHandler.log_message = log_message
 
 
-class LoopiaHelper:
+class LoopiaProxyFunctions:
+    # Regex to validate domains
+    _domain_re = re.compile("^((?!-)[A-Za-z0-9-]{1,63}(?<!-)\\.)+[A-Za-z]{2,}$")
+
     def __init__(self):
         self._ph = PasswordHasher()
 
         # Read and hash any un-hashed passwords
         with open('config/settings.json', encoding='utf-8', mode='r+t') as f:
-            self.users = DotMap(json.load(f))
+            self._users = DotMap(json.load(f))
 
             updated = False
-            for name, user in self.users.items():
+            for name, user in self._users.items():
                 try:
                     extract_parameters(user.password)
                 except InvalidHash:
@@ -46,24 +49,24 @@ class LoopiaHelper:
             # Update the file if we have hashed the password
             if updated:
                 f.seek(0)
-                json.dump(self.users.toDict(), f, indent=2)
+                json.dump(self._users.toDict(), f, indent=2)
                 f.truncate()
 
-        self.loopia = ServerProxy("https://api.loopia.se/RPCSERV")
+        self._loopia = ServerProxy("https://api.loopia.se/RPCSERV")
         self._api_user = os.environ['LOOPIA_USER']
         self._api_pass = os.environ['LOOPIA_PASS']
 
     def _updateUser(self, username, password):
         log.debug(f"Updating user {username=}")
-        self.users[username].password = self._ph.hash(password)
+        self._users[username].password = self._ph.hash(password)
         with open('config/settings.json', encoding='utf-8', mode='w') as f:
-            json.dump(self.users.toDict(), f, indent=2)
+            json.dump(self._users.toDict(), f, indent=2)
 
     # Authenticates the username against the local file
     def _auth(self, username, password):
-        if username in self.users:
+        if username in self._users:
             try:
-                user = self.users[username]
+                user = self._users[username]
                 self._ph.verify(user.password, password)
 
                 if self._ph.check_needs_rehash(user.password):
@@ -73,125 +76,81 @@ class LoopiaHelper:
                 pass
         return False
 
-    # noinspection PyPep8Naming
-    def getDomains(self, username, password):
+    def _checkAndRun(self, username, password, domain, subdomain, func):
+        # Filter out bad input
+        if domain == "" or (subdomain is not None and subdomain == "") or not self._domain_re.match(domain):
+            return ["BAD_INDATA"]
+
         if not self._auth(username, password):
             return ["AUTH_ERROR"]
 
-        user = self.users[username]
-        domains = self.loopia.getDomains(self._api_user, self._api_pass)
+        user = self._users[username]
+        if domain not in user.domains:
+            return ["UNKNOWN_ERROR"]
+
+        return func()
+
+    def getDomains(self, username, password):
+        """Returns a list of domains that the account has access to"""
+        log.info(f"getting domains: {username}")
+        if not self._auth(username, password):
+            return ["AUTH_ERROR"]
+
+        user = self._users[username]
+        domains = self._loopia.getDomains(self._api_user, self._api_pass)
         result = []
         for domain in domains:
             if domain['domain'] in user.domains:
                 result.append(domain)
         return result
 
-    # noinspection PyPep8Naming
     def getSubdomains(self, username, password, domain):
-        if not self._auth(username, password):
-            return ["AUTH_ERROR"]
-
-        user = self.users[username]
-        if domain not in user.domains:
-            return ["UNKNOWN_ERROR"]
-
-        return self.loopia.getSubdomains(self._api_user, self._api_pass, domain)
-
-    # noinspection PyPep8Naming
-    def addSubdomain(self, username, password, domain, subdomain):
-        if not self._auth(username, password):
-            return ["AUTH_ERROR"]
-
-        user = self.users[username]
-        if domain not in user.domains:
-            return ["UNKNOWN_ERROR"]
-
-        return self.loopia.addSubdomain(self._api_user, self._api_pass, domain, subdomain)
-
-    # noinspection PyPep8Naming
-    def getZoneRecords(self, username, password, domain, subdomain):
-        if not self._auth(username, password):
-            return ["AUTH_ERROR"]
-
-        user = self.users[username]
-        if domain not in user.domains:
-            return ["UNKNOWN_ERROR"]
-
-        return self.loopia.getZoneRecords(self._api_user, self._api_pass, domain, subdomain)
-
-    # noinspection PyPep8Naming
-    def addZoneRecord(self, username, password, domain, subdomain, record):
-        if not self._auth(username, password):
-            return ["AUTH_ERROR"]
-
-        user = self.users[username]
-        if domain not in user.domains:
-            return ["UNKNOWN_ERROR"]
-
-        return self.loopia.addZoneRecord(self._api_user, self._api_pass, domain, subdomain, record)
-
-    # noinspection PyPep8Naming
-    def removeSubdomain(self, username, password, domain, subdomain):
-        if not self._auth(username, password):
-            return ["AUTH_ERROR"]
-
-        user = self.users[username]
-        if domain not in user.domains:
-            return ["UNKNOWN_ERROR"]
-
-        return self.loopia.removeSubdomain(self._api_user, self._api_pass, domain, subdomain)
-
-
-class LoopiaProxyFunctions:
-    _helper = LoopiaHelper()
-    _domain_re = re.compile("^((?!-)[A-Za-z0-9-]{1,63}(?<!-)\\.)+[A-Za-z]{2,}$")
-
-    def getDomains(self, username, password):
-        log.info(f"getting domains for: {username}")
-        return self._helper.getDomains(username, password)
-
-    def getSubdomains(self, username, password, domain):
-        # Filter out bad input
-        if domain == "" or not self._domain_re.match(domain):
-            return ["BAD_INDATA"]
-
-        log.info(f"getting subdomains for: {username} -> {domain}")
-        return self._helper.getSubdomains(username, password, domain)
+        """Returns a list of subdomains on the provided domain"""
+        log.info(f"getting subdomains: {username} -> {domain}")
+        return self._checkAndRun(username, password, domain, None,
+                                 lambda: self._loopia.getSubdomains(self._api_user, self._api_pass, domain))
 
     def getZoneRecords(self, username, password, domain, subdomain):
-        # Filter out bad input
-        if domain == "" or subdomain == "" or not self._domain_re.match(domain):
-            return ["BAD_INDATA"]
-
-        log.info(f"getting zone records for: {username} -> {subdomain}.{domain}")
-        return self._helper.getZoneRecords(username, password, domain, subdomain)
+        """Returns a list of zone records for the provided subdomain on the provided domain"""
+        log.info(f"getting zone records: {username} -> {subdomain}.{domain}")
+        return self._checkAndRun(username, password, domain, subdomain,
+                                 lambda: self._loopia.getZoneRecords(self._api_user, self._api_pass, domain, subdomain))
 
     def addSubdomain(self, username, password, domain, subdomain):
-        # Filter out bad input
-        if domain == "" or subdomain == "" or not self._domain_re.match(domain):
-            return ["BAD_INDATA"]
-
-        log.info(f"adding subdomain for: {username} -> {subdomain}.{domain}")
-        return self._helper.addSubdomain(username, password, domain, subdomain)
-
-    def addZoneRecord(self, username, password, domain, subdomain, record):
-        # Filter out bad input
-        if domain == "" or subdomain == "" or not self._domain_re.match(domain):
-            return ["BAD_INDATA"]
-
-        log.info(f"adding zone record to subdomain for: {username} -> {subdomain}.{domain}")
-        return self._helper.addZoneRecord(username, password, domain, subdomain, record)
+        """Adds a subdomain to the provided domain"""
+        log.info(f"adding subdomain: {username} -> {subdomain}.{domain}")
+        return self._checkAndRun(username, password, domain, subdomain,
+                                 lambda: self._loopia.addSubdomain(self._api_user, self._api_pass, domain, subdomain))
 
     def removeSubdomain(self, username, password, domain, subdomain):
-        # Filter out bad input
-        if domain == "" or subdomain == "" or not self._domain_re.match(domain):
-            return ["BAD_INDATA"]
+        """Removes a subdomain on the provided domain"""
+        log.info(f"removing subdomain: {username} -> {subdomain}.{domain}")
+        return self._checkAndRun(username, password, domain, subdomain,
+                                 lambda: self._loopia.removeSubdomain(self._api_user, self._api_pass, domain, subdomain))
 
-        log.info(f"adding subdomain for: {username} -> {subdomain}.{domain}")
-        return self._helper.removeSubdomain(username, password, domain, subdomain)
+    def addZoneRecord(self, username, password, domain, subdomain, record):
+        """Adds a zone records to the provided subdomain for the provided domain"""
+        log.info(f"adding zone record to subdomain: {username} -> {subdomain}.{domain}")
+        return self._checkAndRun(username, password, domain, subdomain,
+                                 lambda: self._loopia.addZoneRecord(self._api_user, self._api_pass, domain, subdomain, record))
+
+    def removeZoneRecord(self, username, password, domain, subdomain, record_id):
+        """Removes a zone record from the provided subdomain for the provided domain"""
+        log.info(f"removing zone record on subdomain: {username} -> {subdomain}.{domain}. ID: {record_id}")
+        return self._checkAndRun(username, password, domain, subdomain,
+                                 lambda: self._loopia.removeZoneRecord(self._api_user, self._api_pass, domain, subdomain, record_id))
+
+    def updateZoneRecord(self, username, password, domain, subdomain, record):
+        """Updates a zone record on the provided subdomain for the provided domain"""
+        if 'record_id' not in record:
+            return 'BAD_INDATA'
+
+        log.info(f"updating zone record on subdomain: {username} -> {subdomain}.{domain}. ID: {record['record_id']}")
+        return self._checkAndRun(username, password, domain, subdomain,
+                                 lambda: self._loopia.updateZoneRecord(self._api_user, self._api_pass, domain, subdomain, record))
 
     def __close(self):
-        self._helper.loopia("close")
+        self._loopia("close")
 
     def __call__(self, attr):
         if attr == "close":
